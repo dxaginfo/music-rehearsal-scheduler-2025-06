@@ -11,165 +11,117 @@ datasource db {
 }
 
 model User {
-  id                     String                   @id @default(uuid())
-  email                  String                   @unique
-  passwordHash           String
-  name                   String
-  phoneNumber            String?
-  profileImageUrl        String?
-  createdAt              DateTime                 @default(now())
-  updatedAt              DateTime                 @updatedAt
-  createdBands           Band[]                   @relation("BandCreator")
-  bandMemberships        BandMember[]
-  regularAvailability    RegularAvailability[]
-  specificUnavailability SpecificUnavailability[]
-  createdRehearsals      Rehearsal[]              @relation("RehearsalCreator")
-  rehearsalAttendance    RehearsalAttendance[]
-  uploadedMaterials      RehearsalMaterial[]
-  notifications          Notification[]
-  notificationPrefs      NotificationPreference[]
+  id              String    @id @default(uuid())
+  name            String
+  email           String    @unique
+  password        String
+  role            String    @default("USER") // USER, ADMIN
+  profileImageUrl String?   
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  bandMembers     BandMember[]
+  rehearsalAttendances RehearsalAttendance[]
+  notifications   Notification[]
+  createdRehearsals Rehearsal[] @relation("RehearsalCreator")
 }
 
 model Band {
-  id          String        @id @default(uuid())
+  id          String      @id @default(uuid())
   name        String
   description String?
+  genre       String?
   logoUrl     String?
-  createdBy   User          @relation("BandCreator", fields: [createdById], references: [id])
-  createdById String
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
   members     BandMember[]
   rehearsals  Rehearsal[]
 }
 
 model BandMember {
-  id        String   @id @default(uuid())
-  band      Band     @relation(fields: [bandId], references: [id])
+  id        String    @id @default(uuid())
+  band      Band      @relation(fields: [bandId], references: [id], onDelete: Cascade)
   bandId    String
-  user      User     @relation(fields: [userId], references: [id])
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId    String
-  role      Role     @default(MEMBER)
-  instrument String?
-  joinDate  DateTime @default(now())
-  status    Status   @default(INVITED)
+  role      String    // LEADER, MEMBER
+  status    String    // ACTIVE, INACTIVE, PENDING
+  joinedAt  DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@unique([bandId, userId])
-}
-
-enum Role {
-  LEADER
-  MEMBER
-}
-
-enum Status {
-  ACTIVE
-  INACTIVE
-  INVITED
-}
-
-model RegularAvailability {
-  id         String   @id @default(uuid())
-  user       User     @relation(fields: [userId], references: [id])
-  userId     String
-  dayOfWeek  Int // 0-6, Sunday to Saturday
-  startTime  DateTime
-  endTime    DateTime
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-}
-
-model SpecificUnavailability {
-  id           String   @id @default(uuid())
-  user         User     @relation(fields: [userId], references: [id])
-  userId       String
-  startDatetime DateTime
-  endDatetime   DateTime
-  reason       String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  @@index([bandId])
+  @@index([userId])
 }
 
 model Rehearsal {
-  id                String               @id @default(uuid())
-  band              Band                 @relation(fields: [bandId], references: [id])
+  id                String    @id @default(uuid())
+  band              Band      @relation(fields: [bandId], references: [id], onDelete: Cascade)
   bandId            String
   title             String
   description       String?
-  location          String
   startDatetime     DateTime
   endDatetime       DateTime
-  isRecurring       Boolean              @default(false)
-  recurrencePattern String?
-  createdBy         User                 @relation("RehearsalCreator", fields: [createdById], references: [id])
+  location          String
+  isRecurring       Boolean   @default(false)
+  recurrencePattern String?   // JSON string with recurrence rules
+  createdBy         User      @relation("RehearsalCreator", fields: [createdById], references: [id])
   createdById       String
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
-  attendance        RehearsalAttendance[]
-  materials         RehearsalMaterial[]
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  attendances     RehearsalAttendance[]
+  materials       RehearsalMaterial[]
+
+  @@index([bandId])
+  @@index([createdById])
+  @@index([startDatetime, endDatetime])
 }
 
 model RehearsalAttendance {
-  id           String          @id @default(uuid())
-  rehearsal    Rehearsal       @relation(fields: [rehearsalId], references: [id])
-  rehearsalId  String
-  user         User            @relation(fields: [userId], references: [id])
-  userId       String
-  status       AttendanceStatus @default(PENDING)
-  reason       String?
-  responseTime DateTime?
+  id          String    @id @default(uuid())
+  rehearsal   Rehearsal @relation(fields: [rehearsalId], references: [id], onDelete: Cascade)
+  rehearsalId String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  status      String    // ATTENDING, NOT_ATTENDING, MAYBE, PENDING
+  comment     String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@unique([rehearsalId, userId])
-}
-
-enum AttendanceStatus {
-  CONFIRMED
-  MAYBE
-  DECLINED
-  PENDING
+  @@index([rehearsalId])
+  @@index([userId])
 }
 
 model RehearsalMaterial {
   id          String    @id @default(uuid())
-  rehearsal   Rehearsal @relation(fields: [rehearsalId], references: [id])
+  rehearsal   Rehearsal @relation(fields: [rehearsalId], references: [id], onDelete: Cascade)
   rehearsalId String
-  title       String
-  description String?
-  fileUrl     String
-  uploadedBy  User      @relation(fields: [uploadedById], references: [id])
-  uploadedById String
-  uploadedAt  DateTime  @default(now())
+  name        String
+  type        String    // SETLIST, SHEET_MUSIC, AUDIO, VIDEO, OTHER
+  fileUrl     String?
+  content     String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([rehearsalId])
 }
 
 model Notification {
-  id        String         @id @default(uuid())
-  user      User           @relation(fields: [userId], references: [id])
-  userId    String
-  type      NotificationType
-  content   String
-  relatedId String?
-  isRead    Boolean        @default(false)
-  createdAt DateTime       @default(now())
-}
+  id          String    @id @default(uuid())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  type        String    // NEW_REHEARSAL, ATTENDANCE_UPDATE, BAND_INVITATION, etc.
+  content     String
+  relatedId   String?   // ID of related entity (rehearsal, band, etc.)
+  isRead      Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-enum NotificationType {
-  NEW_REHEARSAL
-  REHEARSAL_UPDATE
-  REHEARSAL_REMINDER
-  ATTENDANCE_UPDATE
-  MATERIAL_ADDED
-  BAND_INVITATION
-  BAND_UPDATE
-}
-
-model NotificationPreference {
-  id            String          @id @default(uuid())
-  user          User            @relation(fields: [userId], references: [id])
-  userId        String
-  notificationType NotificationType
-  emailEnabled  Boolean         @default(true)
-  pushEnabled   Boolean         @default(true)
-  smsEnabled    Boolean         @default(false)
-
-  @@unique([userId, notificationType])
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
 }
