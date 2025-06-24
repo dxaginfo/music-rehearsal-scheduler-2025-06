@@ -28,7 +28,7 @@ const prisma = new PrismaClient();
  *                 type: string
  *               description:
  *                 type: string
- *               logoUrl:
+ *               genre:
  *                 type: string
  *     responses:
  *       201:
@@ -43,18 +43,20 @@ router.post(
   authenticate,
   [
     body('name').notEmpty().withMessage('Band name is required'),
+    body('description').optional().isString().withMessage('Description must be a string'),
+    body('genre').optional().isString().withMessage('Genre must be a string'),
     validate,
   ],
   async (req, res, next) => {
     try {
-      const { name, description, logoUrl } = req.body;
+      const { name, description, genre } = req.body;
 
+      // Create band
       const band = await prisma.band.create({
         data: {
           name,
           description,
-          logoUrl,
-          createdById: req.user!.id,
+          genre,
           members: {
             create: {
               userId: req.user!.id,
@@ -105,21 +107,23 @@ router.post(
  */
 router.get('/', authenticate, async (req, res, next) => {
   try {
+    // Get all bands where the user is a member
     const bands = await prisma.band.findMany({
       where: {
         members: {
           some: {
             userId: req.user!.id,
+            status: 'ACTIVE',
           },
         },
       },
       include: {
         _count: {
-          select: {
-            members: true,
-            rehearsals: true,
-          },
+          select: { members: true },
         },
+      },
+      orderBy: {
+        createdAt: 'desc',
       },
     });
 
@@ -136,7 +140,7 @@ router.get('/', authenticate, async (req, res, next) => {
  * @swagger
  * /api/bands/{id}:
  *   get:
- *     summary: Get a single band by ID
+ *     summary: Get a band by ID
  *     tags: [Bands]
  *     security:
  *       - bearerAuth: []
@@ -152,7 +156,7 @@ router.get('/', authenticate, async (req, res, next) => {
  *       401:
  *         description: Not authenticated
  *       403:
- *         description: Not authorized to access this band
+ *         description: Not a member of this band
  *       404:
  *         description: Band not found
  */
@@ -167,22 +171,7 @@ router.get(
     try {
       const { id } = req.params;
 
-      // Check if user is a member of the band
-      const membership = await prisma.bandMember.findFirst({
-        where: {
-          bandId: id,
-          userId: req.user!.id,
-        },
-      });
-
-      if (!membership) {
-        return res.status(403).json({
-          success: false,
-          message: 'You are not authorized to access this band',
-          error: 'Forbidden',
-        });
-      }
-
+      // Check if band exists and user is a member
       const band = await prisma.band.findUnique({
         where: { id },
         include: {
@@ -217,6 +206,19 @@ router.get(
           success: false,
           message: 'Band not found',
           error: 'Not Found',
+        });
+      }
+
+      // Check if the user is a member of this band
+      const isMember = band.members.some(
+        (member) => member.userId === req.user!.id && member.status === 'ACTIVE'
+      );
+
+      if (!isMember) {
+        return res.status(403).json({
+          success: false,
+          message: 'You are not a member of this band',
+          error: 'Forbidden',
         });
       }
 
@@ -255,12 +257,9 @@ router.get(
  *             properties:
  *               email:
  *                 type: string
- *                 format: email
  *               role:
  *                 type: string
  *                 enum: [LEADER, MEMBER]
- *               instrument:
- *                 type: string
  *     responses:
  *       201:
  *         description: Member added successfully
@@ -269,11 +268,9 @@ router.get(
  *       401:
  *         description: Not authenticated
  *       403:
- *         description: Not authorized to add members to this band
+ *         description: Not authorized to add members
  *       404:
  *         description: Band or user not found
- *       409:
- *         description: User is already a member of this band
  */
 router.post(
   '/:id/members',
@@ -287,32 +284,32 @@ router.post(
   async (req, res, next) => {
     try {
       const { id } = req.params;
-      const { email, role = 'MEMBER', instrument } = req.body;
+      const { email, role = 'MEMBER' } = req.body;
 
-      // Check if user is a leader of the band
+      // Check if the current user is a band leader
       const userMembership = await prisma.bandMember.findFirst({
         where: {
           bandId: id,
           userId: req.user!.id,
           role: 'LEADER',
+          status: 'ACTIVE',
         },
       });
 
       if (!userMembership) {
         return res.status(403).json({
           success: false,
-          message: 'You must be a band leader to add members',
+          message: 'Only band leaders can add members',
           error: 'Forbidden',
         });
       }
 
-      // Find user by email
-      const userToAdd = await prisma.user.findUnique({
+      // Find the user by email
+      const user = await prisma.user.findUnique({
         where: { email },
-        select: { id: true, email: true, name: true },
       });
 
-      if (!userToAdd) {
+      if (!user) {
         return res.status(404).json({
           success: false,
           message: 'User not found',
@@ -320,15 +317,38 @@ router.post(
         });
       }
 
-      // Check if user is already a member
+      // Check if the user is already a member
       const existingMembership = await prisma.bandMember.findFirst({
         where: {
           bandId: id,
-          userId: userToAdd.id,
+          userId: user.id,
         },
       });
 
       if (existingMembership) {
+        // If already a member but inactive, reactivate
+        if (existingMembership.status === 'INACTIVE') {
+          const updatedMembership = await prisma.bandMember.update({
+            where: { id: existingMembership.id },
+            data: { status: 'ACTIVE', role },
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+          });
+
+          return res.status(200).json({
+            success: true,
+            message: 'Member reactivated successfully',
+            data: updatedMembership,
+          });
+        }
+
         return res.status(409).json({
           success: false,
           message: 'User is already a member of this band',
@@ -336,14 +356,13 @@ router.post(
         });
       }
 
-      // Add user to band
-      const membership = await prisma.bandMember.create({
+      // Add the user as a member
+      const newMembership = await prisma.bandMember.create({
         data: {
           bandId: id,
-          userId: userToAdd.id,
+          userId: user.id,
           role,
-          instrument,
-          status: 'INVITED',
+          status: 'ACTIVE',
         },
         include: {
           user: {
@@ -356,20 +375,25 @@ router.post(
         },
       });
 
-      // Create notification for the invited user
+      // Create a notification for the new member
+      const band = await prisma.band.findUnique({
+        where: { id },
+        select: { name: true },
+      });
+
       await prisma.notification.create({
         data: {
-          userId: userToAdd.id,
+          userId: user.id,
           type: 'BAND_INVITATION',
-          content: `You have been invited to join the band as a ${role.toLowerCase()}`,
+          content: `You have been added to ${band?.name}`,
           relatedId: id,
         },
       });
 
       res.status(201).json({
         success: true,
-        message: 'Band invitation sent successfully',
-        data: membership,
+        message: 'Member added successfully',
+        data: newMembership,
       });
     } catch (error) {
       next(error);
