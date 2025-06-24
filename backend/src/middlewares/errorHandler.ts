@@ -1,46 +1,75 @@
 import { Request, Response, NextFunction } from 'express';
 import { logger } from '../utils/logger';
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 
-interface CustomError extends Error {
+interface AppError extends Error {
   statusCode?: number;
   code?: string;
+  errors?: any[];
 }
 
 export const errorHandler = (
-  err: CustomError,
+  err: AppError,
   req: Request,
   res: Response,
   next: NextFunction
 ) => {
-  const statusCode = err.statusCode || 500;
-  
-  // Log the error details
-  logger.error(`${statusCode} - ${err.message} - ${req.originalUrl} - ${req.method} - ${req.ip}`);
-  
-  // Handle specific error types
-  if (err.code === 'P2002') {
-    // Prisma unique constraint violation
-    return res.status(409).json({
+  logger.error(`${err.name}: ${err.message}`, { 
+    stack: err.stack,
+    path: req.path,
+    method: req.method
+  });
+
+  // Handle Prisma errors
+  if (err instanceof PrismaClientKnownRequestError) {
+    if (err.code === 'P2002') {
+      return res.status(409).json({
+        success: false,
+        message: 'A record with this data already exists',
+        error: 'Conflict',
+      });
+    }
+
+    if (err.code === 'P2025') {
+      return res.status(404).json({
+        success: false,
+        message: 'Record not found',
+        error: 'Not Found',
+      });
+    }
+  }
+
+  // Handle JWT errors
+  if (err.name === 'JsonWebTokenError') {
+    return res.status(401).json({
       success: false,
-      message: 'A record with this data already exists',
-      error: 'Conflict',
+      message: 'Invalid token',
+      error: 'Unauthorized',
     });
   }
-  
-  if (err.code === 'P2025') {
-    // Prisma record not found
-    return res.status(404).json({
+
+  if (err.name === 'TokenExpiredError') {
+    return res.status(401).json({
       success: false,
-      message: 'The requested resource was not found',
-      error: 'Not Found',
+      message: 'Token expired',
+      error: 'Unauthorized',
     });
   }
-  
-  // Handle general errors
-  res.status(statusCode).json({
+
+  // Handle custom application errors
+  if (err.statusCode) {
+    return res.status(err.statusCode).json({
+      success: false,
+      message: err.message,
+      error: err.name,
+      errors: err.errors,
+    });
+  }
+
+  // Handle other errors
+  return res.status(500).json({
     success: false,
-    message: err.message || 'Something went wrong on the server',
-    error: statusCode >= 500 ? 'Server Error' : err.name,
-    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+    message: 'Internal server error',
+    error: 'ServerError',
   });
 };
