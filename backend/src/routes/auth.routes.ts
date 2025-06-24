@@ -1,9 +1,8 @@
 import express from 'express';
 import { body } from 'express-validator';
-import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { authenticate } from '../middlewares/auth';
+import { PrismaClient } from '@prisma/client';
 import { validate } from '../middlewares/validate';
 
 const router = express.Router();
@@ -22,43 +21,42 @@ const prisma = new PrismaClient();
  *           schema:
  *             type: object
  *             required:
+ *               - name
  *               - email
  *               - password
- *               - name
  *             properties:
+ *               name:
+ *                 type: string
  *               email:
  *                 type: string
  *                 format: email
  *               password:
  *                 type: string
+ *                 format: password
  *                 minLength: 8
- *               name:
- *                 type: string
- *               phoneNumber:
- *                 type: string
  *     responses:
  *       201:
- *         description: User registered successfully
+ *         description: User created successfully
  *       400:
  *         description: Validation error
  *       409:
- *         description: Email already exists
+ *         description: Email already in use
  */
 router.post(
   '/register',
   [
-    body('email').isEmail().withMessage('Must be a valid email address'),
+    body('name').notEmpty().withMessage('Name is required'),
+    body('email').isEmail().withMessage('Valid email is required'),
     body('password')
       .isLength({ min: 8 })
       .withMessage('Password must be at least 8 characters long'),
-    body('name').notEmpty().withMessage('Name is required'),
     validate,
   ],
   async (req, res, next) => {
     try {
-      const { email, password, name, phoneNumber } = req.body;
+      const { name, email, password } = req.body;
 
-      // Check if user already exists
+      // Check if email is already in use
       const existingUser = await prisma.user.findUnique({
         where: { email },
       });
@@ -66,41 +64,39 @@ router.post(
       if (existingUser) {
         return res.status(409).json({
           success: false,
-          message: 'User with this email already exists',
+          message: 'Email already in use',
           error: 'Conflict',
         });
       }
 
       // Hash password
       const salt = await bcrypt.genSalt(10);
-      const passwordHash = await bcrypt.hash(password, salt);
+      const hashedPassword = await bcrypt.hash(password, salt);
 
       // Create user
       const user = await prisma.user.create({
         data: {
-          email,
-          passwordHash,
           name,
-          phoneNumber,
+          email,
+          password: hashedPassword,
+          role: 'USER',
         },
         select: {
           id: true,
-          email: true,
           name: true,
-          phoneNumber: true,
+          email: true,
+          role: true,
           createdAt: true,
         },
       });
 
-      // Generate JWT
-      if (!process.env.JWT_SECRET) {
-        throw new Error('JWT secret not defined in environment variables');
-      }
-
+      // Create and sign JWT
       const token = jwt.sign(
-        { id: user.id, email: user.email },
-        process.env.JWT_SECRET,
-        { expiresIn: '1d' }
+        { id: user.id },
+        process.env.JWT_SECRET || 'default_secret',
+        {
+          expiresIn: '7d',
+        }
       );
 
       res.status(201).json({
@@ -121,7 +117,7 @@ router.post(
  * @swagger
  * /api/auth/login:
  *   post:
- *     summary: Log in a user
+ *     summary: Login to the application
  *     tags: [Authentication]
  *     requestBody:
  *       required: true
@@ -138,6 +134,7 @@ router.post(
  *                 format: email
  *               password:
  *                 type: string
+ *                 format: password
  *     responses:
  *       200:
  *         description: Login successful
@@ -149,7 +146,7 @@ router.post(
 router.post(
   '/login',
   [
-    body('email').isEmail().withMessage('Must be a valid email address'),
+    body('email').isEmail().withMessage('Valid email is required'),
     body('password').notEmpty().withMessage('Password is required'),
     validate,
   ],
@@ -157,7 +154,7 @@ router.post(
     try {
       const { email, password } = req.body;
 
-      // Find user
+      // Find user by email
       const user = await prisma.user.findUnique({
         where: { email },
       });
@@ -170,10 +167,10 @@ router.post(
         });
       }
 
-      // Verify password
-      const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+      // Check password
+      const isMatch = await bcrypt.compare(password, user.password);
 
-      if (!isPasswordValid) {
+      if (!isMatch) {
         return res.status(401).json({
           success: false,
           message: 'Invalid credentials',
@@ -181,16 +178,20 @@ router.post(
         });
       }
 
-      // Generate JWT
-      if (!process.env.JWT_SECRET) {
-        throw new Error('JWT secret not defined in environment variables');
-      }
-
+      // Create and sign JWT
       const token = jwt.sign(
-        { id: user.id, email: user.email },
-        process.env.JWT_SECRET,
-        { expiresIn: '1d' }
+        { id: user.id },
+        process.env.JWT_SECRET || 'default_secret',
+        {
+          expiresIn: '7d',
+        }
       );
+
+      // Update last login time
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() },
+      });
 
       res.status(200).json({
         success: true,
@@ -198,9 +199,10 @@ router.post(
         data: {
           user: {
             id: user.id,
-            email: user.email,
             name: user.name,
-            phoneNumber: user.phoneNumber,
+            email: user.email,
+            role: user.role,
+            profileImageUrl: user.profileImageUrl,
           },
           token,
         },
@@ -210,42 +212,5 @@ router.post(
     }
   }
 );
-
-/**
- * @swagger
- * /api/auth/me:
- *   get:
- *     summary: Get current user information
- *     tags: [Authentication]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Current user information
- *       401:
- *         description: Not authenticated
- */
-router.get('/me', authenticate, async (req, res, next) => {
-  try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.user!.id },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        phoneNumber: true,
-        profileImageUrl: true,
-        createdAt: true,
-      },
-    });
-
-    res.status(200).json({
-      success: true,
-      data: user,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 export default router;
